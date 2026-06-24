@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import inspect
 import aioxmpp
 import aioxmpp.rpc.xso as rpc_xso
 import datetime as dt
@@ -6,6 +7,17 @@ import datetime as dt
 from spade.agent import Agent
 
 from loguru import logger
+
+# Patch aioxmpp.rpc.RPCServer to support async handlers transparently
+original_handle = aioxmpp.rpc.RPCServer._handle_method_call
+
+async def patched_handle_method_call(self, stanza):
+    response = await original_handle(self, stanza)
+    if inspect.isawaitable(response):
+        response = await response
+    return response
+
+aioxmpp.rpc.RPCServer._handle_method_call = patched_handle_method_call
 
 class RPCAgent(Agent):
     """
@@ -143,3 +155,48 @@ class RPCAgent(Agent):
             method_name: name of the method to be unregistered
             """
             return self.rpc_server.unregister_method(self, method_name)
+
+
+class AsyncRPCComponent(RPCAgent.RPCComponent):
+    def register_method(self, handler, method_name=None, is_allowed=None):
+        """
+        This method is used to register an async rpc method
+        handler: async function to perform when called
+        method_name: name of the method to be called
+        is_allowed: function that is called to find out if the method can be executed by the JID that calls it
+        """
+        async def method_wrapper(stanza):
+            params = self.get_params(stanza.payload.payload.params)
+            response = await handler(*params)
+            
+            if not isinstance(response, list):
+                response = [response]
+            
+            query = rpc_xso.Query(
+                rpc_xso.MethodResponse(
+                    self.parse_params(response)
+                )
+            )
+            return query
+
+        return self.rpc_server.register_method(method_wrapper, method_name, is_allowed)
+
+    def unregister_method(self, method_name):
+        """
+        This method unregisters a previously registered method
+        method_name: name of the method to be unregistered
+        """
+        return self.rpc_server.unregister_method(method_name)
+
+
+class AsyncRPCAgent(RPCAgent):
+    """
+    Agent with the capabilities to perform async RPC (Remote procedure calls).
+    """
+    async def _hook_plugin_after_connection(self, *args, **kwargs):
+        try:
+            await super(RPCAgent, self)._hook_plugin_after_connection(*args, **kwargs)
+        except AttributeError:
+            logger.debug("_hook_plugin_after_connection is undefined")
+
+        self.rpc = AsyncRPCComponent(self.client)
