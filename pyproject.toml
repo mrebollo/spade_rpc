@@ -8,8 +8,8 @@ dependencies = [
     "aioxmpp",
     "click>=8.4.1",
     "loguru>=0.7.3",
-    "pytz>=2026.2",
-    "spade>=3.2.3",
+    "pytz==2022.1", # FIXME: update to >=2026.2 when spade updates
+    "spade>=4.1.4",
 ]
 
 [tool.uv.sources]
