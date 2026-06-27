@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import aioxmpp.rpc.xso as rpc_xso
 from spade_rpc import RPCAgent
 
 class DFAgent(RPCAgent):
@@ -10,9 +9,9 @@ class DFAgent(RPCAgent):
 
     async def setup(self):    
         def register_method(stanza):
-            params = self.rpc.get_params(stanza.payload.payload.params)
+            params = self.rpc.get_params(stanza['rpc_query']['method_call']['params'])
             method_name = params[0]
-            jid = str(stanza.from_)
+            jid = str(stanza['from'])
 
             if jid not in self.jid_directory:
                 self.jid_directory[jid] = []
@@ -22,20 +21,12 @@ class DFAgent(RPCAgent):
                 self.method_directory[method_name] = []
             self.method_directory[method_name].append(jid)
 
-            query = rpc_xso.Query(
-                rpc_xso.MethodResponse(
-                    rpc_xso.Params([
-                        rpc_xso.Param(rpc_xso.Value(rpc_xso.boolean(True)))
-                    ])
-                )
-            )
-
-            return query
+            return True
 
         def unregister_method(stanza):
-            params = self.rpc.get_params(stanza.payload.payload.params)
+            params = self.rpc.get_params(stanza['rpc_query']['method_call']['params'])
             method_name = params[0]
-            jid = str(stanza.from_)
+            jid = str(stanza['from'])
 
             if jid in self.jid_directory:
                 self.jid_directory[jid].remove(method_name)
@@ -43,15 +34,7 @@ class DFAgent(RPCAgent):
             if method_name in self.method_directory:
                 self.method_directory[method_name].remove(jid)
             
-            query = rpc_xso.Query(
-                rpc_xso.MethodResponse(
-                    rpc_xso.Params([
-                        rpc_xso.Param(rpc_xso.Value(rpc_xso.boolean(True)))
-                    ])
-                )
-            )
-
-            return query
+            return True
     
         def list_methods(jid):
             if jid in self.jid_directory:

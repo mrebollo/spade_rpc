@@ -1,10 +1,6 @@
 # -*- coding: utf-8 -*-
-import aioxmpp
-import aioxmpp.rpc.xso as rpc_xso
-import datetime as dt
-
+import inspect
 from spade.agent import Agent
-
 from loguru import logger
 
 class RPCAgent(Agent):
@@ -28,89 +24,71 @@ class RPCAgent(Agent):
         Component for providing RPCAgents the XEP-009 Jabber RPC service.
         """
 
-        type_class = {
-            int: rpc_xso.i4,
-            int: rpc_xso.integer,
-            str: rpc_xso.string,
-            float: rpc_xso.double,
-            str: rpc_xso.base64,
-            bool: rpc_xso.boolean,
-            dt.datetime: rpc_xso.datetime,
-            list: rpc_xso.array,
-            dict: rpc_xso.struct
-        }
-
-        class_type = {v: k for k, v in type_class.items()}
-
         def __init__(self, client):
             self.client = client
-            self.rpc_client = self.client.summon(aioxmpp.RPCClient)
-            self.rpc_server = self.client.summon(aioxmpp.RPCServer)
+            # Register xep_0009 plugin on the slixmpp client
+            if not self.client.has_plugin('xep_0009'):
+                self.client.register_plugin('xep_0009')
+            
+            # Register event handler for incoming RPC calls
+            self.client.add_event_handler('jabber_rpc_method_call', self._handle_rpc_call)
+            
+            self._methods = {}
+            self.rpc_server = self.RPCServerShim(self)
+
+        class RPCServerShim:
+            def __init__(self, component):
+                self.component = component
+
+            def register_method(self, handler, method_name=None, is_allowed=None):
+                return self.component._register_method_raw(handler, method_name, is_allowed)
+
+            def unregister_method(self, method_name):
+                return self.component.unregister_method(method_name)
 
         def parse_param(self, param):
-            """
-            This function parses a param or list of params into the appropiate rpc_xso class.
-            param: a python parameter.
-            returns rpc_xso.Value class with the corresponding rpc_xso value.
-            """
-            if type(param) == list:
-                value = rpc_xso.array(rpc_xso.data([self.parse_param(x) for x in param]))
-            elif type(param) == dict:
-                members = [rpc_xso.member(rpc_xso.name(key), self.parse_param(value)) for key, value in param.items()]
-                value = rpc_xso.struct(members)
-            else:
-                value = self.type_class[type(param)](param)
-            
-            return rpc_xso.Value(value)
+            from slixmpp.plugins.xep_0009.binding import _py2xml
+            return _py2xml(param)
 
         def parse_params(self, params):
-            """
-            This function parses the list of params into the corresponding rpc_xso.Param class.
-            params: list of params to be parsed
-            returns rpc_xso.Params with the list of rcp_xso parameters
-            """
-            return rpc_xso.Params([rpc_xso.Param(self.parse_param(x)) for x in params])
+            from slixmpp.plugins.xep_0009.binding import py2xml
+            return py2xml(*params)
 
-        def get_param(self, xso_param):
-            """
-            This function parses a rpc_xso param into a python usable param.
-            xso_param: rpc_xso param to be parsed.
-            returns corresponding python usable param
-            """
-            if type(xso_param) == rpc_xso.array:
-                return [self.get_param(x.value) for x in xso_param.data.data]
-            elif type(xso_param) == rpc_xso.struct:
-                return {member.name.name: self.get_param(member.value.value) for member in xso_param.members}
-            else:
-                return self.class_type[type(xso_param)](xso_param.value)
+        def get_param(self, param_xml):
+            from slixmpp.plugins.xep_0009.binding import _xml2py
+            return _xml2py(param_xml)
 
-        def get_params(self, xso_params):
-            """
-            This function parses the list of rpc_xso params into python usable params.
-            xso_param: xso_params to be parsed
-            returns list of corresponding python usable param
-            """
-            return [self.get_param(param.value.value) for param in xso_params.params]
+        def get_params(self, params_xml):
+            from slixmpp.plugins.xep_0009.binding import xml2py
+            return xml2py(params_xml)
 
         async def call_method(self, jid, method_name, params):
             """
             This method is used to make an rpc call to the corresponding jid with the given parameters
             jid: JID of the peer to query
-            methodName: Name of the method to perform the call
+            method_name: Name of the method to perform the call
             params: Param or list of params to perform the call
             """
-            if not isinstance(params, list):
+            if not isinstance(params, (list, tuple)):
                 params = [params]
 
-            query = rpc_xso.Query(
-                rpc_xso.MethodCall(
-                    rpc_xso.MethodName(method_name),
-                    self.parse_params(params)
-                )
-            )
+            from slixmpp.plugins.xep_0009.binding import py2xml, xml2py
+            iq = self.client.plugin['xep_0009'].make_iq_method_call(jid, method_name, py2xml(*params))
+            
+            try:
+                response = await iq.send()
+            except Exception as e:
+                logger.error(f"Error calling remote method {method_name} on {jid}: {e}")
+                raise e
 
-            response = await self.rpc_client.call_method(aioxmpp.JID.fromstr(jid), query)
-            return self.get_params(response.payload.params)
+            response.enable('rpc_query')
+            fault = response['rpc_query']['method_response']['fault']
+            if fault is not None:
+                from slixmpp.plugins.xep_0009.binding import xml2fault
+                f = xml2fault(fault)
+                raise Exception(f"RPC Remote Fault ({f['code']}): {f['string']}")
+                
+            return xml2py(response['rpc_query']['method_response']['params'])
 
         def register_method(self, handler, method_name=None, is_allowed=None):
             """
@@ -119,27 +97,101 @@ class RPCAgent(Agent):
             method_name: name of the method to be called
             is_allowed: function that is called to find out if the method can be executed by the JID that calls it
             """
-            def method_wrapper(stanza):
-                params = self.get_params(stanza.payload.payload.params)
+            if method_name is None:
+                method_name = handler.__name__
+            self._methods[method_name] = {
+                'handler': handler,
+                'is_allowed': is_allowed,
+                'raw': False
+            }
 
-                response = handler(*params)
-                
-                if not isinstance(response, list):
-                    response = [response]
-                
-                query = rpc_xso.Query(
-                    rpc_xso.MethodResponse(
-                        self.parse_params(response)
-                    )
-                )
-
-                return query
-
-            return self.rpc_server.register_method(method_wrapper, method_name, is_allowed)
+        def _register_method_raw(self, handler, method_name=None, is_allowed=None):
+            if method_name is None:
+                method_name = handler.__name__
+            self._methods[method_name] = {
+                'handler': handler,
+                'is_allowed': is_allowed,
+                'raw': True
+            }
 
         def unregister_method(self, method_name):
             """
             This method unregisters a previously registered method
             method_name: name of the method to be unregistered
             """
-            return self.rpc_server.unregister_method(self, method_name)
+            if method_name in self._methods:
+                del self._methods[method_name]
+
+        async def _handle_rpc_call(self, iq):
+            iq.enable('rpc_query')
+            method_name = iq['rpc_query']['method_call']['method_name']
+            
+            if method_name not in self._methods:
+                error = self.client.plugin['xep_0009']._item_not_found(iq)
+                error.send()
+                return
+                
+            method_info = self._methods[method_name]
+            is_allowed = method_info['is_allowed']
+            handler = method_info['handler']
+            raw = method_info['raw']
+            
+            if is_allowed is not None:
+                allowed = is_allowed(iq['from'], method_name)
+                if not allowed:
+                    error = self.client.plugin['xep_0009']._forbidden(iq)
+                    error.send()
+                    return
+
+            try:
+                if raw:
+                    if inspect.iscoroutinefunction(handler):
+                        response = await handler(iq)
+                    else:
+                        response = handler(iq)
+                    
+                    import slixmpp
+                    from slixmpp.xmlstream import ElementBase
+                    if isinstance(response, slixmpp.Iq):
+                        response.send()
+                    elif isinstance(response, ElementBase):
+                        reply = iq.reply()
+                        reply.append(response)
+                        reply.send()
+                    else:
+                        if response is None:
+                            response_vals = []
+                        elif not isinstance(response, (list, tuple)):
+                            response_vals = [response]
+                        else:
+                            response_vals = response
+                        from slixmpp.plugins.xep_0009.binding import py2xml
+                        reply = self.client.plugin['xep_0009'].make_iq_method_response(iq['id'], iq['from'], py2xml(*response_vals))
+                        reply.send()
+                else:
+                    from slixmpp.plugins.xep_0009.binding import xml2py, py2xml
+                    params = xml2py(iq['rpc_query']['method_call']['params'])
+                    
+                    if inspect.iscoroutinefunction(handler):
+                        response = await handler(*params)
+                    else:
+                        response = handler(*params)
+                    
+                    if response is None:
+                        response_vals = []
+                    elif not isinstance(response, (list, tuple)):
+                        response_vals = [response]
+                    else:
+                        response_vals = response
+                    
+                    reply = self.client.plugin['xep_0009'].make_iq_method_response(iq['id'], iq['from'], py2xml(*response_vals))
+                    reply.send()
+                    
+            except Exception as e:
+                logger.exception(f"Error handling RPC call {method_name}")
+                fault = {
+                    'code': 500,
+                    'string': str(e)
+                }
+                from slixmpp.plugins.xep_0009.binding import fault2xml
+                self.client.plugin['xep_0009']._send_fault(iq, fault2xml(fault))
