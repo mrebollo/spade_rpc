@@ -27,7 +27,7 @@ class RPCAgent(Agent):
         def __init__(self, client):
             self.client = client
             # Register xep_0009 plugin on the slixmpp client
-            if not self.client.has_plugin('xep_0009'):
+            if 'xep_0009' not in self.client.plugin:
                 self.client.register_plugin('xep_0009')
             
             # Register event handler for incoming RPC calls

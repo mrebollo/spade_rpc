@@ -19,7 +19,6 @@ class TestSpadeRPC(unittest.IsolatedAsyncioTestCase):
 
         # We need a mock client that behaves like a slixmpp ClientXMPP
         self.mock_client = MagicMock()
-        self.mock_client.has_plugin.return_value = False
         
         # We need to mock register_plugin and plugin access
         self.plugins = {}

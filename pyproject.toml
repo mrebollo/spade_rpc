@@ -1,0 +1,22 @@
+[project]
+name = "spade-rpc"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.4.1",
+    "loguru>=0.7.3",
+    "pyjabber",
+    "pytz==2022.1", # FIXME: update to >=2026.2 when spade updates
+    "spade>=4.1.4",
+    "spade-pubsub",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+pyjabber = { path = "../PyJabber", editable = true }
+spade-pubsub = { path = "../spade_pubsub", editable = true }
