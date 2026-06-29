@@ -78,7 +78,6 @@ class RPCAgent(Agent):
                 agent = container.get_agent(bare_jid)
                 if agent and agent.client and agent.client.boundjid:
                     resolved = str(agent.client.boundjid)
-                    logger.debug(f"Resolved JID {bare_jid} from local container: {resolved}")
                     return resolved
             except Exception:
                 pass
@@ -86,31 +85,14 @@ class RPCAgent(Agent):
             # 2. Try to get it from the XMPP Roster
             try:
                 resources = self.client.roster[bare_jid].resources
-                if resources and not isinstance(resources, MagicMock if 'MagicMock' in globals() else type(None)):
+                if resources:
                     resource = list(resources.keys())[0]
                     resolved = f"{bare_jid}/{resource}"
-                    logger.debug(f"Resolved JID {bare_jid} from roster: {resolved}")
                     return resolved
             except Exception:
                 pass
 
-            # 3. Try to subscribe to presence and wait for it
-            try:
-                logger.info(f"JID {bare_jid} has no active resource. Subscribing to presence to resolve Full JID...")
-                self.client.send_presence(pto=bare_jid, ptype='subscribe')
-                for _ in range(20):
-                    await asyncio.sleep(0.1)
-                    resources = self.client.roster[bare_jid].resources
-                    if resources and not isinstance(resources, MagicMock if 'MagicMock' in globals() else type(None)):
-                        resource = list(resources.keys())[0]
-                        resolved = f"{bare_jid}/{resource}"
-                        logger.info(f"Resolved JID {bare_jid} after presence subscription: {resolved}")
-                        return resolved
-            except Exception as e:
-                logger.warning(f"Error subscribing to presence for {bare_jid}: {e}")
-
-            # Fallback to the bare JID
-            logger.warning(f"Could not resolve Full JID for {bare_jid}, falling back to bare JID")
+            # Fallback to the bare JID directly
             return bare_jid
 
         async def call_method(self, jid, method_name, params):
