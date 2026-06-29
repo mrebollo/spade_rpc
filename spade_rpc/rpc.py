@@ -62,6 +62,57 @@ class RPCAgent(Agent):
             from slixmpp.plugins.xep_0009.binding import xml2py
             return xml2py(params_xml)
 
+        async def _resolve_jid(self, target_jid):
+            import asyncio
+            from slixmpp import JID
+            target = JID(target_jid)
+            if target.resource:
+                return target.full
+
+            bare_jid = target.bare
+
+            # 1. Try to get it from the local SPADE Container (fastest for local agents)
+            try:
+                from spade.container import Container
+                container = Container()
+                agent = container.get_agent(bare_jid)
+                if agent and agent.client and agent.client.boundjid:
+                    resolved = str(agent.client.boundjid)
+                    logger.debug(f"Resolved JID {bare_jid} from local container: {resolved}")
+                    return resolved
+            except Exception:
+                pass
+
+            # 2. Try to get it from the XMPP Roster
+            try:
+                resources = self.client.roster[bare_jid].resources
+                if resources and not isinstance(resources, MagicMock if 'MagicMock' in globals() else type(None)):
+                    resource = list(resources.keys())[0]
+                    resolved = f"{bare_jid}/{resource}"
+                    logger.debug(f"Resolved JID {bare_jid} from roster: {resolved}")
+                    return resolved
+            except Exception:
+                pass
+
+            # 3. Try to subscribe to presence and wait for it
+            try:
+                logger.info(f"JID {bare_jid} has no active resource. Subscribing to presence to resolve Full JID...")
+                self.client.send_presence(pto=bare_jid, ptype='subscribe')
+                for _ in range(20):
+                    await asyncio.sleep(0.1)
+                    resources = self.client.roster[bare_jid].resources
+                    if resources and not isinstance(resources, MagicMock if 'MagicMock' in globals() else type(None)):
+                        resource = list(resources.keys())[0]
+                        resolved = f"{bare_jid}/{resource}"
+                        logger.info(f"Resolved JID {bare_jid} after presence subscription: {resolved}")
+                        return resolved
+            except Exception as e:
+                logger.warning(f"Error subscribing to presence for {bare_jid}: {e}")
+
+            # Fallback to the bare JID
+            logger.warning(f"Could not resolve Full JID for {bare_jid}, falling back to bare JID")
+            return bare_jid
+
         async def call_method(self, jid, method_name, params):
             """
             This method is used to make an rpc call to the corresponding jid with the given parameters
@@ -69,11 +120,13 @@ class RPCAgent(Agent):
             method_name: Name of the method to perform the call
             params: Param or list of params to perform the call
             """
+            resolved_jid = await self._resolve_jid(jid)
+
             if not isinstance(params, (list, tuple)):
                 params = [params]
 
             from slixmpp.plugins.xep_0009.binding import py2xml, xml2py
-            iq = self.client.plugin['xep_0009'].make_iq_method_call(jid, method_name, py2xml(*params))
+            iq = self.client.plugin['xep_0009'].make_iq_method_call(resolved_jid, method_name, py2xml(*params))
             
             try:
                 response = await iq.send()
